@@ -1,14 +1,11 @@
 package scredis.protocol
 
-import akka.util.ByteString
+import java.nio.ByteBuffer
 
 import scredis.exceptions._
 import scredis.serialization.UTF8StringReader
 
-import scala.util.{ Try, Success, Failure }
 import scala.concurrent.Promise
-
-import java.nio.ByteBuffer
 
 abstract class Request[A](command: Command, args: Any*) {
   private val promise = Promise[A]()
@@ -69,7 +66,7 @@ abstract class Request[A](command: Command, args: Any*) {
   def argsCount: Int = args.size
   def isReadOnly: Boolean = command.isReadOnly
   
-  override def toString = (command +: args).map {
+  override lazy val toString = (command +: args).map {
     case bytes: Array[Byte] => UTF8StringReader.read(bytes)
     case x                  => x.toString
   }.mkString(" ")

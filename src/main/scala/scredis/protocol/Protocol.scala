@@ -1,48 +1,38 @@
 package scredis.protocol
 
-import com.typesafe.scalalogging.LazyLogging
+import java.nio.ByteBuffer
+import java.util.concurrent.Semaphore
 
 import akka.actor.ActorRef
-import akka.util.ByteString
-
 import scredis._
 import scredis.exceptions._
 import scredis.serialization.UTF8StringReader
 import scredis.util.BufferPool
 
-import scala.collection.mutable.{ ArrayBuilder, ListBuffer, Stack }
-import scala.util.{ Try, Success, Failure }
-import scala.concurrent.{ ExecutionContext, Future, Promise, Await }
-import scala.concurrent.duration.Duration
 import scala.annotation.tailrec
-
-import java.nio.{ ByteBuffer, CharBuffer }
-import java.util.concurrent.Semaphore
-
+import scala.collection.mutable
+import scala.concurrent.Future
 import scala.language.higherKinds
+import scala.util.Try
 
 /**
  * This object implements various aspects of the `Redis` protocol.
  */
 object Protocol {
   
-  private case class ArrayState(
-    val size: Int,
-    var count: Int
-  ) {
-    def increment(): Unit = count += 1
-    def isCompleted = (count == size)
+  private case class ArrayState(size: Int, var count: Int) {
+    def increment() {
+      count += 1
+    }
+    def isCompleted = count == size
   }
   
   private val Encoding = "UTF-8"
     
-  private val CrByte = '\r'.toByte
-  private val CfByte = '\n'.toByte
   private val SimpleStringResponseByte = '+'.toByte
   private val ErrorResponseByte = '-'.toByte
   private val IntegerResponseByte = ':'.toByte
   private val BulkStringResponseByte = '$'.toByte
-  private val BulkStringResponseLength = 1
   private val ArrayResponseByte = '*'.toByte
   private val ArrayResponseLength = 1
   
@@ -59,7 +49,7 @@ object Protocol {
     }
   }
   
-  private def aquire(count: Int = 1): Unit = concurrentOpt.foreach {
+  private def acquire(count: Int = 1): Unit = concurrentOpt.foreach {
     case (semaphore, true) => semaphore.acquire(count)
     case (semaphore, false) => if (!semaphore.tryAcquire(count)) {
       throw new Exception("Busy")
@@ -117,8 +107,7 @@ object Protocol {
   }
   
   private def parseString(buffer: ByteBuffer): String = {
-    val bytes = new ArrayBuilder.ofByte()
-    var count = 0
+    val bytes = new mutable.ArrayBuilder.ofByte()
     var char = buffer.get()
     while (char != '\r') {
       bytes += char
@@ -196,7 +185,7 @@ object Protocol {
     var requests = 0
     var position = -1
     var arrayPosition = -1
-    val arrayStack = Stack[ArrayState]()
+    val arrayStack = mutable.Stack[ArrayState]()
     var isFragmented = false
     
     @inline @tailrec
@@ -264,7 +253,7 @@ object Protocol {
       }
     }
     
-    if (!arrayStack.isEmpty) {
+    if (arrayStack.nonEmpty) {
       isFragmented = true
     }
     
@@ -298,37 +287,37 @@ object Protocol {
       }
       val kind = UTF8StringReader.read(vector(0).asInstanceOf[Option[Array[Byte]]].get)
       kind match {
-        case "subscribe"    => {
+        case "subscribe"    =>
           val channel = UTF8StringReader.read(vector(1).asInstanceOf[Option[Array[Byte]]].get)
           val channelsCount = vector(2).asInstanceOf[Int]
           PubSubMessage.Subscribe(channel, channelsCount)
-        }
-        case "psubscribe"   => {
+
+        case "psubscribe"   =>
           val pattern = UTF8StringReader.read(vector(1).asInstanceOf[Option[Array[Byte]]].get)
           val patternsCount = vector(2).asInstanceOf[Int]
           PubSubMessage.PSubscribe(pattern, patternsCount)
-        }
-        case "unsubscribe"  => {
+
+        case "unsubscribe"  =>
           val channelOpt = vector(1).asInstanceOf[Option[Array[Byte]]].map(UTF8StringReader.read)
           val channelsCount = vector(2).asInstanceOf[Int]
           PubSubMessage.Unsubscribe(channelOpt, channelsCount)
-        }
-        case "punsubscribe" => {
+
+        case "punsubscribe" =>
           val patternOpt = vector(1).asInstanceOf[Option[Array[Byte]]].map(UTF8StringReader.read)
           val patternsCount = vector(2).asInstanceOf[Int]
           PubSubMessage.PUnsubscribe(patternOpt, patternsCount)
-        }
-        case "message"      => {
+
+        case "message"      =>
           val channel = UTF8StringReader.read(vector(1).asInstanceOf[Option[Array[Byte]]].get)
           val message = vector(2).asInstanceOf[Option[Array[Byte]]].get
           PubSubMessage.Message(channel, message)
-        }
-        case "pmessage"     => {
+
+        case "pmessage"     =>
           val pattern = UTF8StringReader.read(vector(1).asInstanceOf[Option[Array[Byte]]].get)
           val channel = UTF8StringReader.read(vector(2).asInstanceOf[Option[Array[Byte]]].get)
           val message = vector(3).asInstanceOf[Option[Array[Byte]]].get
           PubSubMessage.PMessage(pattern, channel, message)
-        }
+
         case x              => throw RedisProtocolException(
           s"Invalid PubSubMessage type received: $x"
         )
@@ -340,7 +329,7 @@ object Protocol {
   private[scredis] def send[A](request: Request[A])(
     implicit listenerActor: ActorRef
   ): Future[A] = {
-    aquire()
+    acquire()
     listenerActor ! request
     request.future
   }
@@ -348,7 +337,7 @@ object Protocol {
   private[scredis] def send[A](transaction: Transaction)(
     implicit listenerActor: ActorRef
   ): Future[Vector[Try[Any]]] = {
-    aquire(1 + transaction.requests.size)
+    acquire(1 + transaction.requests.size)
     listenerActor ! transaction
     transaction.execRequest.future
   }
